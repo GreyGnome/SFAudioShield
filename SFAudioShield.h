@@ -61,15 +61,9 @@
 // ----------------------------------------------------------------------------
 //   Enable debug output (Output -> printf ...)
 //   --------------------------------------------------------------------------
-#define getPSTR(s) pgmStrToRAM(PSTR(s))
-
-#ifndef ADBG2PRT
-extern char *audiodebugtoprint;
-#endif
-
 #define DEBUG
 #ifdef DEBUG
-#define DEBUGOUT(x)  free(audiodebugtoprint);audiodebugtoprint=(char *) malloc(strlen_P(x));sprintf_P(audiodebugtoprint, x); Serial.print(audiodebugtoprint);
+#define DEBUGOUT(x)  Serial.print(F(x)); Serial.flush()
 #define DEBUGOUT2(x,y)  Serial.print(x,y);
 #define DEBUGNL  Serial.println("");
 #else
@@ -198,7 +192,7 @@ static SdFile track;
 //attach refill interrupt off DREQ line, pin 2
 //If DREQ is high, VS1053b can take at least 32 bytes of SDI data or one SCI command.
 //DREQ is turned low when the stream buffer is too full and for the duration of a SCI command.
-#define INTERRUPT_HANDLER_ENABLE                   attachInterrupt(0, fillVS1053FIFO, RISING);
+#define INTERRUPT_HANDLER_ENABLE                   attachInterrupt(0, loadVS1053FIFO, RISING);
 #define INTERRUPT_HANDLER_DISABLE                   detachInterrupt(0);
 
 // This should remain 32; this number is tied to DREQ interrupts. See datasheet.
@@ -209,7 +203,7 @@ static SdFile track;
 #define ENDING_SET_SM_CANCEL   sciModeWord = sci_read(SCI_MODE); \
     sciModeWord |= SM_CANCEL; \
     sci_write(SCI_MODE, sciModeWord); \
-	delayMicroseconds(6); // wait 80 CLKI cycles
+	delayMicroseconds(7); // wait 80 CLKI cycles, or 80/12288000 seconds
 #define SEND_2048_ENDFILLBYTE readEndFillByte(); \
 	for (uint8_t j = 0; j < VS_BUFFER_SIZE; j++) audioDataBuffer[j]=vs1053EndFillByte; \
     for (uint8_t i = 0; i < 64; i++) { \
@@ -313,6 +307,7 @@ uint8_t length;
 char *name[];
 };
 
+#define DEFAULT_INTERRUPT_STATE true
 /** Class for VS1053 - Ogg Vorbis / MP3 / AAC / WMA / FLAC / MIDI Audio Codec Chip.
  *  Datasheet, see http://www.vlsi.fi/fileadmin/datasheets/vlsi/vs1053.pdf
  *
@@ -360,7 +355,7 @@ public:
         _st_freqlimit(DEFAULT_TREBLE_FREQUENCY) {
 	INTERRUPT_HANDLER_DISABLE
     };
-	SFAudioShield() : _via_interrupt(true),
+	SFAudioShield() : _via_interrupt(DEFAULT_INTERRUPT_STATE),
 		_volume(DEFAULT_VOLUME),
 		_balance(0),
         _sb_amplitude(DEFAULT_BASS_AMPLITUDE),
@@ -370,6 +365,7 @@ public:
 	INTERRUPT_HANDLER_DISABLE
     };
 
+	uint8_t init(void);
     /** Initialize the vs1053b device.
      *
      * @return 
@@ -378,7 +374,6 @@ public:
 	 *    3 on failure to open the root directory
 	 *	  1 on successful init
      */
-    uint8_t  init(void);
     uint8_t  initVS1053(void);
     
     /** Set the volume.
@@ -521,18 +516,14 @@ public:
      */    
     int8_t play();
 
-	/** send 32 bytes of data from the SD card to the vs1052. This method will check to
-	 * see that the chip is ready to receive. A single block of 32 bytes is sent, or, if
-	 * less than 32 bytes are available from the file on the SD card, the stream is
-	 * terminated.
+	/** send at least 32 bytes of data from the open file on the SD card to the vs1052. This
+	 * method will check to see that the chip is ready to receive. A single block of 32 bytes
+	 * is sent, or, if continuous is true, the chip will receive data in 32 byte chunks while the vs1053 has
+	 * buffer space. If at any time less than 32 bytes are available from the file on the SD card,
+	 * the stream is terminated.
 	 */
-	static void sendToVS1053FIFO(void);
-
-	/** The chip will receive data while the vs1053 has buffer space. Blocks of 32 bytes
-	 * are sent; if less than 32 bytes are available from the file on the SD card, the
-	 * stream is terminated.
-	 */
-	static void fillVS1053FIFO(void);
+	static void loadVS1053FIFO(bool continuous);
+	static void loadVS1053FIFO(void);
 
 
     /** Interrupt the playback.
@@ -612,6 +603,7 @@ public:
 
 	static volatile uint32_t callCount;
 	static volatile uint16_t timer0OFCounter;
+	static bool continuous;
 
     void sineTestActivate(uint8_t);
 
@@ -625,6 +617,8 @@ public:
  	*    pointer to the audio data buffer of VS_BUFFER_SIZE length.
  	*/    
 	static uint8_t *getAudioDataBuffer(void);
+
+	void resetVS1053(void);
 
 
 protected:
@@ -675,7 +669,7 @@ protected:
 
 	// VS1053's FIFO is filled via interrupt, or must be called by the caller often enough
 	// to ensure it doesn't drain out.
-	bool								_via_interrupt;
+	bool							_via_interrupt;
  
     static const char PROGMEM          _sampleRateTable[4][4];       // _sampleRateTable[id][srate]
 
