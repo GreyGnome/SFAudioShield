@@ -203,7 +203,7 @@ static SdFile track;
 #define ENDING_SET_SM_CANCEL   sciModeWord = sci_read(SCI_MODE); \
     sciModeWord |= SM_CANCEL; \
     sci_write(SCI_MODE, sciModeWord); \
-	delayMicroseconds(7); // wait 80 CLKI cycles, or 80/12288000 seconds
+	delayMicroseconds(7); // wait 80 CLKI cycles, or 80/12288000 seconds (see the datasheet)
 #define SEND_2048_ENDFILLBYTE readEndFillByte(); \
 	for (uint8_t j = 0; j < VS_BUFFER_SIZE; j++) audioDataBuffer[j]=vs1053EndFillByte; \
     for (uint8_t i = 0; i < 64; i++) { \
@@ -267,8 +267,9 @@ enum MP3_MODE
 };
 
 typedef enum MP3_MODE MP3_MODE;
-/** Struct for informations about audio streams.
- *
+
+/** Struct for information about audio streams. This is gained by query'ing the
+ * VS1053. That method has been completely untested and is not known to work. -Mike 11/3/2012
  */
 typedef struct AudioInfo
 {
@@ -365,13 +366,22 @@ public:
 	INTERRUPT_HANDLER_DISABLE
     };
 
+    /** Initialize the SFAudioShield object, and the hardware.
+     * This initializes the SD card, opens the SD card volume, and 
+     * initializes the VS1053.
+     * @return
+     *  0 on failure to read SCI_STATUS from vs1053
+     *  1 on successful init
+     *  2 on failure to initalize SD card
+	 *  3 on failure to open volume
+	 *  4 on failure to open the root directory
+     */
 	uint8_t init(void);
+
     /** Initialize the vs1053b device.
      *
      * @return 
-     *    0 on failure to initalize card or read SCI_STATUS from vs1053
-	 *    2 on failure to open volume
-	 *    3 on failure to open the root directory
+     *    0 on failure to read SCI_STATUS from vs1053
 	 *	  1 on successful init
      */
     uint8_t  initVS1053(void);
@@ -382,7 +392,7 @@ public:
      * volume is from 0 (highest) to 0xFE (254), or 127 dB down (aka, "Total silence").
  	 * Volume is entered as the number of db. If you want to do 1/2 db, give it the "POINT5"
 	 * argument.
-     *   Volume -0.0dB, -1.0dB, -2.0dB .. -127.0dB. 
+     *   Volume: -0.0dB, -1.0dB, -2.0dB .. -127.0dB. 
      *   == 0, 2, 4, ... 254
      * @param point5
      *   == 0 or 1
@@ -499,46 +509,71 @@ public:
      * 
      * @param speed
      *   Speed 0, 1, .. (0, 1 normal speed). 
-     *   Speeds greater 2 are not recommended, buffer must be filled quickly enough.
+     *   Buffer must be filled quickly enough, otherwise the VS1053 will stu-uh-uh-uh-
+     *   stutter. Research shows that an otherwise unoccupied ATmega328p is about
+     *   able to keep up with 6x speed.
      */    
     void setPlaySpeed(uint16_t speed);       
         
     /** Start playing audio from file. Will not play a new file if an existing track
+     * is alreading playing.
+     * @return
+     *  0 if another track is playing
+     *  -1 on track open error
+     *  1 on success
 	 */
     int8_t start(char *filename);
 
     /** Start playing audio from file. Will not play a new file if an existing track
 	 * is already playing; you must cancel() first in order to play() something new.
+     *
+     * If using Interrupts:
+     *
+     * If not using Interrupts:
      * @param filename
 	 *  from the SD card
 	 * @return
-     *  0 if playing, -1 if file open error, 1 if successful start.
+     *  0 if already playing, 1 if successful start.
      */    
     int8_t play();
 
 	/** send at least 32 bytes of data from the open file on the SD card to the vs1052. This
 	 * method will check to see that the chip is ready to receive. A single block of 32 bytes
-	 * is sent, or, if continuous is true, the chip will receive data in 32 byte chunks while the vs1053 has
-	 * buffer space. If at any time less than 32 bytes are available from the file on the SD card,
-	 * the stream is terminated.
+	 * is sent, or, if continuous is true, the chip will receive data in 32 byte chunks while
+     * the vs1053 has buffer space. If at any time less than 32 bytes are available from the
+     * file on the SD card, the stream is prepared for termination:
+     * + read endFillByte from the VS1053.
+     * + Fill the remainder of the send buffer with endFillBytes and send it.
+     * + Begin the terminateStream() method, where the first state (send 2052 endFillByte's)
+     *   is performed.
+     * + The next interrupt, or the next call to loadVS1053FIFO(), will send you to the
+     *   terminateStream() method.
+     * + The termiateStream() method 
+     *
+     * DO NOT call this if you are using interrupts.
+     * @param continuous
+     *  load the FIFO until full (otherwise send a single block of 32 bytes)
+     *  Subsequent calls of loadVS1053FIFO() will use the same value of continuous.
 	 */
 	static void loadVS1053FIFO(bool continuous);
 	static void loadVS1053FIFO(void);
 
 
-    /** Interrupt the playback.
-     *      
+    /** Interrupt the playback. This only makes sense in the context of an interrupt-
+     * driven methodology. If you want to pause using the "fill-it-yourself" method,
+     * simply stop sending the chip data for a time.
      */    
     void pause(void);
     
     /** Stop the playback in the middle of a song. 
-     *  After this call, you can now send the next audio file to buffer.
+     *  After this call, you can send the next audio file to buffer.
      *      
      */        
     void cancel(void);
     
      /** Get information about played audio stream.
-     * 
+     * This is completely untested and not known to work. Still, it may form the basis
+     * for the enterprising coder who wants to get it to work. :-)  -Mike 11/3/2012
      * @param aInfo
      *   Return value for the informations.
      *     
@@ -560,56 +595,82 @@ public:
 	 */
     uint8_t powerUp(void);
 
-    /** Get file comments from the file. This is stuff like "Title", "Artist", etc.
-	 * This must be run after start() but before play(). If you run this after you play, you will jump to the
-	 * very beginning of the file. Effects are undefined.
+
+    /** getFileComments
+     * Get file comments from the file. This is stuff like "Title", "Artist", etc.
+	 * This must be run after start() but before play(). If you run this after you play,
+     * you will jump to the very beginning of the file (effects are undefined).
 	 * MP3 and Ogg files are supported. Which of the fields (Ogg nomenclature) or frames
 	 * (MP3/ID3v2 nomenclature) you want to get is up to you. However, there are
 	 * limitations (the ATMega328p has 2k of ram, after all). They are:
-	 * - Each field is stored in by default in the audio data buffer, so 31 bytes max only. See the method's code
-	 *   for how to increase this size.
+	 * - Each field is stored in by default in the audio data buffer, so 31 bytes max
+     *   only. See the method's code for how to increase this size.
 	 *
-	 *   We conveniently hijack the audioDataBuffer in this method so we don't need to consume any extra
-	 *   memory space, but you are free to gobble up as much as you're comfortable with.
-	 *   The contents will have a null (0, or \0) appended, for easy usage with your favorite string manipulation
-	 *   tools (that's why we only give a 31 byte string in a 32 byte array).
-	 *   The null will be put right after the string, or in array cell 31, whichever is shortest.
-	 * - For Ogg files at least, if there are multiple fields of a type int the file, the routine will not get
-	 *   more than the first of each type. For example, if you want to get the "Artist" and there are 3 "Artist"s
-	 *   in your file, only the first Artist will be returned.
-     * @param fileName
-	 *  from the SD card
+	 *   We conveniently hijack the audioDataBuffer in this method so we don't need to
+     *   consume any extra memory space, but you are free to gobble up as much as you're
+     *   comfortable with (you'll need to initialize your own array and modify the code).
+     *
+     *   The contents will have a null (0, or \0) appended, for easy
+     *   usage with your favorite string manipulation tools (that's why we only give a 31
+     *   byte string in a 32 byte array). The null will be put right after the string, or
+     *   in array cell 31, whichever is shortest.
+     *
+	 * - For Ogg files at least, if there are multiple fields of a type in the file, the
+     *   routine will not get more than the first of each type. For example, if you want
+     *   to get the "Artist" and there are 3 "Artist"s in your file, only the first Artist
+     *   will be returned.
 	 *  Ogg Files
 	 *  You can actually use partial strings for the field names; for example: "TITL", "TRAC".
-	 *  The routine will match if it finds a partial match, then iterate past the "=" sign (in the file), then
-	 *  return your field *  information. It is up to you to ensure that your field name is sufficiently unique
-	 *  that it will return the proper data every time. Note that field names are case-insensitive.
+	 *  The routine will match if it finds a partial match, then iterate past the "=" sign
+     *  (in the file), then return your field information. It is up to you to ensure that
+     *  your field name is sufficiently unique that it will return the proper data every
+     *  time. Note that field names are case-insensitive.
 	 *  MP3 Files
-	 *  MP3 files use ID3v2, which means that all the names are 4-bytes in length.  So the frame names will always
-	 *  look like for example: "TALB", "TCOM", "TYER". // see http://id3.org/id3v2.3.0
-	 *  ...hence, no confusion.
+	 *  MP3 files use ID3v2, which means that all the names are 4-bytes in length. So the
+     *  frame names will always look like for example: "TALB", "TCOM", "TYER".
+     *  see http://id3.org/id3v2.3.0
+     *
+     * @param fileName
+	 *  The music file from the SD card, in 8.3 formate
 	 * @return
      *  -1 upon file error
      */
 	#define MUSIC_FILE_BUFFER VS_BUFFER_SIZE
 	int8_t getFileComments(char *fieldName);
 
-	static volatile bool isPlaying;
-	// Player Stuff
-	static volatile uint32_t byteCount;
-	static volatile int8_t SDFileReadResults;
-	static volatile uint8_t vs1053EndFillByte;
-	static volatile bool fileError;
-
-	static volatile uint32_t callCount;
-	static volatile uint16_t timer0OFCounter;
-	static bool continuous;
+    /** where n defines the sine test to use. n is defined as follows:
+     * Send a sine wavwe out of the VS1053.
+     * The frequency of the sine to be output can now be calculated from
+     * F=Fs × S / 128
+     * Example: Sine test is activated with value 126, which is 0b01111110.
+     * Breaking n to its components, FsIdx = 0b011 = 3 and thus Fs = 22050Hz.
+     * S = 0b11110 = 30, and thus the final sine frequency
+     * F = 22050Hz × 30	≈ 5168Hz.
+     * 
+     * FsIdx Fs		FsIdx Fs
+     * 0	44100 Hz	4	24000 Hz
+     * 1	48000 Hz	5	16000 Hz
+     * 2	32000 Hz	6	11025 Hz
+     * 3	22050 Hz	7	12000 Hz
+     *
+     * FsIdx comes from bits 7:5 of n.  S comes from bits 4:0 of n.
+     *
+     */
 
     void sineTestActivate(uint8_t);
 
+    /** Stop that horrid beep!
+     */
     void sineTestDeactivate(void);
 
-	// static char id3Frame[4]; // See "What is this for?" in the .cpp file
+    /** Reset that bad boy.
+     * This is a hardware reset of the VS1053, where _RST is brought low for 5 micros,
+     * then brought back high.
+     *
+     * A software reset, btw, is done by activating bit  RESET in register SCI MODE
+     * (Chapter 8.7.1 in the datasheet). Then wait for at least 2 μs.
+     */
+	void resetVS1053(void);
 
 	/** Return a pointer to the audio data buffer. This buffer is used for dumping the
 	 * track comments, as well as audio data.
@@ -618,11 +679,50 @@ public:
  	*/    
 	static uint8_t *getAudioDataBuffer(void);
 
-	void resetVS1053(void);
+    //
+    // STATIC VARIABLES ********************************************************
+    //
+    // You can query this to find out if the library believes a file is currently playing.
+	static volatile bool isPlaying;
+	// Player Stuff
+    // Count of the number of bytes sent to the VS1053, from the file
+    // (endFillBytes don't count)
+	static volatile uint32_t byteCount;
+    // return value from the SD card library read functions.
+	static volatile int8_t SDFileReadResults;
+    // this value differs for each file type, so it must be read dynamically whenever
+    // you wish to terminate a song.
+	static volatile uint8_t vs1053EndFillByte;
+    // fileError is for you, the user of the library.
+    // You can query this to see if there has been a file open or read error in the
+    // recent past. This is reset to false in the play() method. But it will be
+    // set by the loadVS1053FIFO() method, start() method, init() method... wherever
+    // the SD card is actually accessed.
+	static volatile bool fileError;
 
+    // For debugging. Not used in production.
+	static volatile uint32_t callCount;
+    // For timing. Not used in production.
+	static volatile uint16_t timer0OFCounter;
+
+    // If the loadVS1053FIFO() was called to load the VS1053 continuously until its
+    // FIFO is filled, or only a single 32-byte block should be sent.
+    // This should always be true when loading via interrupt, or the VS1053 will not
+    // alert us that it needs new data (we are interrupted on RISING).
+	static bool continuous;
+
+	// static char id3Frame[4]; // See "What is this for?" in the .cpp file
 
 protected:
 
+    // This is an internal variable that is used to guide the code to the
+    // terminateStream() method.
+	static volatile bool terminate;
+    /**
+     * This method actually sends the data to the SCI_VOL register on the chip.
+     * Volume and balance levels are both sent. You never need to use this; programs
+     * will use the setVolume() method (above).
+     */
     void changeVolume(void);
         
     void updateBassTreb(void);
@@ -643,17 +743,40 @@ protected:
  	*/
 	static void fileXferBlock(void);
 
+    /** Read endFillByte from the VS1053.
+     * @return
+     *  void, but sets volatile uint8_t SFAudioShield::vs1053EndFillByte, a
+     *  static class variable.
+     */
 	static void readEndFillByte(void);
+
+    /** terminate the stream normally.
+     * This method is called by loadVS1053FIFO() (which is also our Interrupt Handler).
+     * This is a stateful method; it jumps from state to state, which is stored in
+     * the terminateState variable. If it exits, then the next call to loadVS1053FIFO() will 
+     * simply continue the process in this method at the appropriate state.
+     *
+     * We depend on the usual _DREQ/interrupt interaction to regulate the data flow to the
+     * chip. Or, if loading data from loop(), the terminateStream() method will work properly.
+     * How do you know if your stream is done?  Check the isPlaying variable.
+     *
+     * Note: I am kind, very kind. How kind? Well, in
+     * past iterations of this method, the whole enchilada was performed in one swoop.
+     * This means that, based on my measurements, if it takes 0.32 millis to load 32 bytes,
+     * times 64 (to get it to 2048 bytes) which is at least 20 millis, then this method took
+     * at least that long to return. Do you really want your ATmega328p to linger in a
+     * single method for 20 millis!?  No, you don't. So I made this method so that it
+     * doesn't sit and wait for the whole 2048-byte payload to load; it returns as soon as
+     * the VS1053 brings DREQ low (...which means it's got no more room for any data).
+     *
+     * This method respects continuous (see loadVS1053FIFO()).
+     */
 	static void terminateStream(void);
+
+    /**
+     */
 	static void transferBuffer(void);
 
-	/** The method inside
-	 *
-	 */
-	static void innerDataHandler(void);
-
-
-    
     char*                           _buffer;
     char*                           _bufferReadPointer;
     char*                           _bufferWritePointer;

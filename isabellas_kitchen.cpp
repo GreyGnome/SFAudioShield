@@ -2,24 +2,7 @@
  * In vi:  :set ts=2 sw=2
  * THIS IS ONLY MY TEST SHIT. THIS IS NOT ISABELLAS KITCHEN
  * TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST
- * TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST
- * TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST
- * TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST
- * TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST
- * TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST
  */
-
-// CONNECTIONS TO CLOCK CHIP:  A5 - green A4 - yellow
-// CONNECTIONS TO LED BOARD:  10 - orange, 11 - white, 13 - green
-// CONNECTIONS TO ROTARY ENCODER (left): 5 - White Pushbutton, 3 - Green, 4- White
-
-#undef DEBUG_displayTime
-#undef DEBUG_checkLongTimeouts
-
-//#include <I2C.h>
-//#include <Chronodot.h>
-//#include <ooPinChangeInt.h>
-//#include <AdaEncoder.h>
 
 #include <SPI.h>
 //Add the SdFat Libraries
@@ -27,21 +10,45 @@
 #include <SdFatUtil.h>
 #include <SFAudioShield.h>
 
-// =================================================================
-// === COMPONENTS ==================================================
-// =================================================================
-// --- LEDs --------------------------------------------------------
-// constructor includes the CS pin (10 in this case)
-//LEDdisplay leds=LEDdisplay(10); // Orange: 10, White: 11, Green: 13
 
-// change this as you will
-#define USE_INTERRUPT false
+// To use this example:
+// I have it set up to work with any of 3 types of music files: OGG, MP3, or AAC (e.g. from iTunes).
+// But it won't recognize file comments in AAC files (see below).
+//
+// 1. Decide if you want the music file to play by the VS1053 interrupting the Arduino, or if you want
+// the sketch to be responsible for keeping the music data flowing.  Set USE_INTERRUPT appropriately:
+#define USE_INTERRUPT true
+SFAudioShield AudioPlayer(USE_INTERRUPT); // creates the SFAudioShield object.
+//
+// 2. Put music file(s) on an SD card. I use a FAT-32 formatted, 4 Gig micro sd card.
+// 3. Go down to the section that begins with #define AAC_TEST. Choose which file type you want to play.
+// 4. Go down to the section that says "File Definitions". Define your filename (in 7.3 notation).
+// 5. Define a description of your file.
+// 6. If playing Ogg or MP3, define the fields that you want to print out. I have 4 there as an example.
+// Change the fields, add fields, do fewer fields- however you'd like.
+// I did not do the work to recognize AAC files. If you want it, you'll have to figure it out.
+// If you do, send me your patches and I'll include them in the library!
+// Otherwise, I may do it myself. But probably not.
+//
+// Once done with all that, upload the sketch, and watch it play.
 
-SFAudioShield AudioPlayer(USE_INTERRUPT);
+// ******** Which test? Uncomment one of these *********** //
+// ******** Which test? Uncomment one of these *********** //
+// ******** Which test? Uncomment one of these *********** //
+#define AAC_TEST // for m4a
+//#define MP3_TEST
+//#define OGG_TEST
+// ******** Which test? Uncomment one of those *********** //
+// ******** Which test? Uncomment one of those *********** //
+// ******** Which test? Uncomment one of those *********** //
+
+// Do you want to display the fields (comments)?
+#undef DO_COMMENTS
+#define FIELDCOUNT 4
+
 /*
- * Pin: 10 Port addr (hex): 0x25 mask: 100 not mask: 11111011
- */
-/*
+ *
+ * Analysis and calculations of some old Serial output.
 HOLA Baby
 01: Goo Goo Dolls mp3					// setup() for loop.
 playMP3 called								// playMP3()
@@ -74,54 +81,48 @@ SFAudioShield: Song successfully stopped.
 ERROR: **** cancel(): HDAT1 not 0. ***********
 CANCELLED :-)
 
-*/
-// To use this example:
-// I have it set up to work with any of 3 types of music files: OGG, MP3, or AAC (from iTunes).
-//
-// Decide if you want the music file to play by the VS1053 interrupting the Arduino, or if you want
-// the sketch to be responsible for keeping the music data flowing.
-// Look for USE_INTERRUPT, and set it.
-//
-// Go down to the section that begins with #define AAC_TEST. Choose which file type you want to play.
-// Define your filename (in 7.3 notation).
-// Define a description of your file.
-// If playing Ogg or MP3, define the fields that you want to print out. I have 4 there as an example.
-// I did not do the work to recognize AAC files.
-//
-// Then upload the sketch, and watch it play.
-// ******** Which test? Uncomment one of these *********** //
-#define AAC_TEST // for m4a
-//#define MP3_TEST
-//#define OGG_TEST
+...That shows that there are generally 13 fileXferBlock() calls for every interrupt that takes place.
 
-// Do you want to display the fields (comments)?
-#undef DO_COMMENTS
-#define FIELDCOUNT 4
+*/
+
+// *****************************************
+// File Definitions
+// *****************************************
 char *ogg_filename="loseyrsf.ogg";
 #define OGG_DESCR F("Lose Yourself ogg")
+
+// *****************************************
 char *mp3_filename="track001.mp3";
 #define MP3_DESCR F("Goo Goo Dolls mp3")
+//char *mp3_filename="water4.mp3";
+//#define MP3_DESCR F("Water4 mp3")
+
+// *****************************************
 char *aac_filename="unblvbl.m4a";
+#define M4A_DESCR F("Unbelievable AAC (m4a)")
+
+
+// *****************************************
 #ifdef OGG_TEST
-#define DESCRIPTION F("Lose Yourself ogg")
+#define DESCRIPTION OGG_DESCR
 const char strAlbum[] PROGMEM ="Album";
 const char strTitle[] PROGMEM ="Title";
 const char strArtist[] PROGMEM ="Artist";
 const char strDate[] PROGMEM ="Date";
 #endif
 #ifdef MP3_test
-#define DESCRIPTION F("Goo Goo Dolls mp3")
+#define DESCRIPTION MP3_DESCR
 const char strAlbum[] PROGMEM ="TALB";
 const char strTitle[] PROGMEM ="TIT2";
 const char strArtist[] PROGMEM ="TPE1";
 const char strDate[] PROGMEM ="TYER";
 #else
 #ifndef OGG_TEST // AAC HERE
-#define DESCRIPTION F("Unbelievable AAC (m4a)")
-const char strAlbum[] PROGMEM ="TALB"; // AAC atom thingies. Currently this is useless. -Mike 2/1/2013
-const char strTitle[] PROGMEM ="TIT2";
-const char strArtist[] PROGMEM ="TPE1";
-const char strDate[] PROGMEM ="TYER";
+#define DESCRIPTION M4A_DESCR
+const char strAlbum[] PROGMEM ="DOESNT"; // AAC atom thingies. Currently this is useless. -Mike 2/1/2013
+const char strTitle[] PROGMEM ="WORK";
+const char strArtist[] PROGMEM ="IS";
+const char strDate[] PROGMEM ="USELESS";
 #endif
 #endif
 const char* fields[] PROGMEM = { strDate, strAlbum, strTitle, strArtist };
@@ -223,6 +224,9 @@ void playMP3(char *trackname, uint8_t durationSeconds) {
 // 44100 Hz					-
 // 48000 Hz					-
 
+//#define LOOPVOLUME DEFAULT_VOLUME
+#define LOOPVOLUME 30
+
 // ================================================================
 // === SETUP ======================================================
 // ================================================================
@@ -270,6 +274,7 @@ size_t Print::print(const __FlashStringHelper *ifsh)
 		//delay(2000);
 		//AudioPlayer.sineTestDeactivate();
 
+	  AudioPlayer.setVolume(LOOPVOLUME);
 		for (uint8_t i=0; i < 2; i++) {
 			Serial.println(i, DEC);
 			Serial.println(F("1: Goo Goo Dolls mp3"));
@@ -286,20 +291,6 @@ size_t Print::print(const __FlashStringHelper *ifsh)
 			playMP3("wesnoth.ogg", 2);
 		}
 
-		Serial.print(F("GO: "));
-		Serial.println(DESCRIPTION);
-#ifdef OGG_TEST
-		//Serial.println(F("GO: Lose Yourself ogg"));
-		playMP3(ogg_filename, 0); // starts it up but returns immediately after filling buffer.
-#endif
-#ifdef MP3_TEST
-		//Serial.println(F("GO: Goo Goo Dolls mp3"));
-		playMP3(mp3_filename, 0); // starts it up but returns immediately after filling buffer.
-#endif
-#ifdef AAC_TEST
-		//Serial.println(F("GO: )Unbelievable AAC (m4a)"));
-		playMP3(aac_filename, 0); // starts it up but returns immediately after filling buffer.
-#endif
 	}
 	//Serial.println("DONE tracking bytes");
 
@@ -311,6 +302,7 @@ size_t Print::print(const __FlashStringHelper *ifsh)
 
 void delayit(uint16_t deciseconds) {
 	for (uint16_t i=0; i < deciseconds; i++) {
+    if (! AudioPlayer.isPlaying) break;
 		Serial.print("_");
 		delay(50);
 		//leds.scroll(F("o"), 10, 1);
@@ -320,35 +312,54 @@ void delayit(uint16_t deciseconds) {
 	}
 }
 
-//#define LOOPVOLUME DEFAULT_VOLUME
-#define LOOPVOLUME 30
 bool printed_u1=false;
 bool printed_u2=false;
 bool printed_c=false;
+uint8_t playspeed=1;
+uint8_t playiterations=0;
+uint8_t terminateState=0;
 // ================================================================
 // === LOOP =======================================================
 // === This keeps going endlessly, even if there's no song playing.
 // ================================================================
 void loop() {
+theloop:
+    if (! AudioPlayer.isPlaying)  {
+	    AudioPlayer.setVolume(LOOPVOLUME);
+      playiterations=0; playspeed=1;
+		  Serial.print(F("GO: "));
+		  Serial.println(DESCRIPTION);
+#ifdef OGG_TEST
+		  playMP3(ogg_filename, 0); // starts it up and returns immediately after filling buffer.
+#endif
+#ifdef MP3_TEST
+		  playMP3(mp3_filename, 0); // starts it up and returns immediately after filling buffer.
+#endif
+#ifdef AAC_TEST
+		  playMP3(aac_filename, 0); // starts it up and returns immediately after filling buffer.
+#endif
+  }
 	if (! USE_INTERRUPT) {
 		SFAudioShield::loadVS1053FIFO(false);
 		if (millis() & 0x0100) { if (! printed_u1) { Serial.print("_"); printed_u1=true; } }
 		else { printed_u1=false; }
-		if (millis() & 0x0200) { if (! printed_u2) { Serial.print("^"); printed_u2=true; } }
+		if (millis() & 0x0200) { if (! printed_u2) { Serial.print("^"); printed_u2=true; }}
 		else { printed_u2=false; }
-		if (millis() & 0x2000) { if (! printed_c) { Serial.println(F("Playing, non-interrupt style!")); printed_c=true;} }
-		else { printed_c=false; }
+		if (millis() & 0x2000) {
+      if (! printed_c) { Serial.println(F("Playing, non-interrupt style!")); printed_c=true; }
+    } else { printed_c=false; }
 	}
 	else {
-	AudioPlayer.setVolume(LOOPVOLUME);
 	delayit(20);
 	AudioPlayer.setTrebleFrequency(3);
 	for (int8_t i=0; i > -9; i--) {
+    if (! AudioPlayer.isPlaying) break;
 		Serial.println(F("Less Trebly"));
 		AudioPlayer.setTrebleAmplitude(i);
 		delayit(10);
 	}
 	for (int8_t i=-9; i < 8; i++) {
+    if (! AudioPlayer.isPlaying) break;
 		Serial.println(F("More Trebly"));
 		AudioPlayer.setTrebleAmplitude(i);
 		delayit(10);
@@ -356,6 +367,7 @@ void loop() {
 	Serial.println(F("Normal treble"));
 	AudioPlayer.setTrebleFrequency(0);
 	AudioPlayer.setTrebleAmplitude(0);
+  if (! AudioPlayer.isPlaying) goto theloop;
 	delayit(20);
 	for (uint8_t i=0; i<2; i++) {
 		Serial.println(F("Bassier"));
@@ -367,6 +379,7 @@ void loop() {
 		AudioPlayer.setBassAmplitude(0);
 		delayit(20);
 	}
+  if (! AudioPlayer.isPlaying) goto theloop;
 	Serial.println(F("Faster"));
 	AudioPlayer.setPlaySpeed(2);
 	/*delayit(20);
@@ -401,10 +414,12 @@ void loop() {
 
 	Serial.print(F("Volume at balance test end: ")); Serial.println(AudioPlayer.getVolumeDB());
 	AudioPlayer.setBalance(0);   	 // do this first
+  if (! AudioPlayer.isPlaying) goto theloop;
 	AudioPlayer.setVolume(LOOPVOLUME); // from Datasheet:
 																 // 	In VS1053b bass and treble initialization and volume change is
 																 //		delayed until the next batch of samples are sent to the audio FIFO.
 	delayit(20);
+  if (! AudioPlayer.isPlaying) goto theloop;
 	Serial.println(F("QUIET!!!!"));
 	for (uint8_t i=LOOPVOLUME; i < 75; i++) {
 		delayit(1);
