@@ -59,7 +59,7 @@ volatile uint16_t SFAudioShield::timer0OFCounter=0;
 // is created (since the interrupt handler is a general-purpose byte-transferrer
 // to the VS1053). We can't use static variables in initializers of the Class.
 static bool _via_interruptS=DEFAULT_INTERRUPT_STATE;
-bool SFAudioShield::continuous=true;
+static bool _continuousS=true; // is set in init();
 
 const char PROGMEM SFAudioShield::_sampleRateTable[4][4] = {
     11, 12, 8, 0,
@@ -227,7 +227,8 @@ static uint16_t wram_read(uint16_t address) {
     if (tmp1==tmp2) return tmp1;
     sci_write(SCI_WRAMADDR,address);
     tmp1=sci_read(SCI_WRAM);
-    if (tmp1==tmp2) return tmp1;
+    //
+    //if (tmp1==tmp2) return tmp1;
     return tmp1;
 }
  
@@ -247,6 +248,8 @@ uint8_t SFAudioShield::initVS1053(void) {
     _CS(HIGH);	//Deselect Control       
 	_DCS(HIGH);	//Deselect Data
 	_RST(LOW); //Put VS1053 into hardware reset
+    delayMicroseconds(10); // but don't make the signal too fast.
+ 	_RST(HIGH);
 
 	//We have no need to setup SPI for VS1053 because this has already been done by the SDfatlib
     //spi_initialise();                    //initialise MBED
@@ -257,74 +260,79 @@ uint8_t SFAudioShield::initVS1053(void) {
 	//Internal clock multiplier is 1.0x after power up. 
 	//Therefore, max SPI speed is 1.75MHz. We will use 1MHz to be safe.
 	SPI.setClockDivider(SPI_CLOCK_DIV16); //Set SPI bus speed to 1MHz (16MHz / 16 = 1MHz)
-	for (int i=0; i<4; i++) {
-		SPI.transfer(0xFF); //Throw a dummy byte at the bus
-    }
-	//Initialize VS1053 chip 
-	delay(10);
- 	_RST(HIGH); //Bring up VS1053
+	/*for (int i=0; i<4; i++) {
+		SPI.transfer(0xFF); //Throw a dummy byte at the bus. Why? I dunno. So I commented it out.
+    }*/
+    //
+	// Initialize VS1053 chip 
+    //
+    while (! _DREQ) {}; // WAIT FOR _DREQ.
 
-#ifdef DEBUG    
-    uint16_t info = wram_read(para_chipID_0);
-    //DEBUGOUT("SFAudioShield: ChipID_0:%04X\r\n", info);
+    sci_write(SCI_CLOCKF, (SC_MULT_XTALIx50)); // takes 1200 clock cycles.
+    delayMicroseconds(100); // ...should be 97.56 micros so we can delay 100 uS here
+    // change spi to higher speed 
+    //sdi_initialise(); // SPI library handles this
+	SPI.setClockDivider(SPI_CLOCK_DIV4); //Set SPI bus speed to 4MHz (16MHz / 4 = 4MHz)
+
+	setVolume(DEFAULT_VOLUME);
+    updateBassTreb();    
+    //delay(1); // NECESSARY???
+#ifdef DEEPDEBUG
+    uint16_t info = wram_read(para_chipID_0); // Why is it necessary to start with this?
+    DEBUGOUT("SFAudioShield: ChipID_0: "); DEBUGOUT2(info, HEX); DEBUGNL;
     info = wram_read(para_chipID_1);
-    //DEBUGOUT("SFAudioShield: ChipID_1:%04X\r\n", info);
+    DEBUGOUT("SFAudioShield: ChipID_1: "); DEBUGOUT2(info, HEX); DEBUGNL;
     info = wram_read(para_version);
-    //DEBUGOUT("SFAudioShield: Structure version:%04X\r\n", info);
-#endif
+    DEBUGOUT("SFAudioShield: Structure version: "); DEBUGOUT2(info, HEX); DEBUGNL;
  
-    //get chip version, set clock multiplier and load patch
-	//Now that we have the VS1053 up and running, increase the internal clock multiplier and up our SPI rate
-    int i = (sci_read(SCI_STATUS) & 0xF0) >> 4;
-    if (i == 4) {
-     
-        //DEBUGOUT("SFAudioShield: Installed Chip is: VS1053\r\n");
-        sci_write(SCI_CLOCKF, (SC_MULT_XTALIx50));
-        delay(10);
+    //get chip version
+    info = (sci_read(SCI_STATUS) & 0xF0) >> 4;
+    if (info == 4) {
+        DEBUGOUT("SFAudioShield: Installed Chip is: VS1053\r\n");
     } 
     else
     {
-        //DEBUGOUT("SFAudioShieldb: Not Supported Chip\r\n");
+        DEBUGOUT("SFAudioShieldb: Not Supported Chip\r\n");
         return 0;
     }
+#endif
      
-    // change spi to higher speed 
-    //sdi_initialise();                
-	SPI.setClockDivider(SPI_CLOCK_DIV4); //Set SPI bus speed to 4MHz (16MHz / 4 = 4MHz)
-
-    _CS(HIGH);
-    _DCS(HIGH);
-	setVolume(DEFAULT_VOLUME);
-    updateBassTreb();    
     return 1;
 }
 
 uint8_t SFAudioShield::init(void) {
 	fileError=false;
 	if (!card.init(SPI_FULL_SPEED, SD_CS)) { fileError=true; return 2; }
-
+#ifdef DEBUG
 	for (uint8_t i=0; i < 4; i++) {
 		delay(300);
 		digitalWriteFast(MYLED, HIGH);
 		delay(100);
 		digitalWriteFast(MYLED, LOW);
 	}
+#endif
 
 	//Initialize a volume on the SD card.
 	if (!driveVolume.init(&card)) { fileError=true; return 3; }
 	//Open the root directory in the volume.
 	if (!root.openRoot(&driveVolume)) {
-		fileError=true; return 4; //Serial.println("Error: Opening root"); //Open the root directory in the driveVolume. 
+		fileError=true; return 4;
+#ifdef DEEPDEBUG
+        DEBUGOUT("Error: Opening root"); //Open the root directory in the driveVolume.
+#endif
 	}
 
 	_via_interruptS=_via_interrupt;
+    _continuousS=_continuous;
 	return(initVS1053());
 }
  
 void SFAudioShield::setPlaySpeed(uint16_t speed)
 {
     wram_write(para_playSpeed, speed);
-    //DEBUGOUT("SFAudioShield: Change speed. New speed: %d\r\n", speed);
+#ifdef DEEPDEBUG
+    DEBUGOUT("SFAudioShield: Change speed. New speed: %d\r\n", speed);
+#endif
 }
 
 /*
@@ -476,16 +484,19 @@ inline __attribute__((always_inline)) void SFAudioShield::readEndFillByte(void) 
 	vs1053EndFillByte=(uint8_t)(wram_read(para_endFillByte) & 0x00FF);
 }
  
+bool is_concat=false;
+
+static uint16_t bytesSent=0;
 enum terminateState
 {
+    PLAYING,
     SEND2052ENDFILLBYTE,
     SETSMCANCEL,
     CHECKSMCANCEL,
     CHECKSWRESET,
     TERMINATEDONE
 };
-static terminateState terminateState=SEND2052ENDFILLBYTE;
-static uint16_t bytesSent=0;
+static terminateState terminateState=PLAYING;
 // endFillByte is previously loaded into audioDataBuffer[] already by fillBuffer();
 // 3. Send at least 2052 bytes of endFillByte[7:0].
 // 4. Set SCI MODE bit SM CANCEL.
@@ -496,6 +507,8 @@ static uint16_t bytesSent=0;
 //    to indicate that no format is being decoded. Return to 1.
 inline __attribute__((always_inline)) void SFAudioShield::terminateStream(void) {
 	uint16_t sciModeWord;
+    //if (is_concat) Serial.print("T*");
+    if (terminateState==PLAYING) terminateState=SEND2052ENDFILLBYTE;
     switch(terminateState)
     {
     case SEND2052ENDFILLBYTE:
@@ -510,7 +523,7 @@ inline __attribute__((always_inline)) void SFAudioShield::terminateStream(void) 
         while (_DREQ) {
             if (bytesSent < 2048) {
                 transferBuffer(); bytesSent+=32; // 0.32 millis (320 uS) to load 32 bytes.
-                if ((! _via_interruptS) && (! continuous)) return;
+                if ((! _via_interruptS) && (! _continuousS)) return;
             }
             else {
                 sdi_write_data(4, false); // send 4 more endFillByte
@@ -539,11 +552,11 @@ inline __attribute__((always_inline)) void SFAudioShield::terminateStream(void) 
                     terminateState=TERMINATEDONE;
                     break;
                 }
-                if ((! _via_interruptS) && (! continuous)) return; // if called from a main program: send 1 block at a time.
+                if ((! _via_interruptS) && (! _continuousS)) return; // if called from a main program: send 1 block at a time.
             }
             else {
 		        // In some cases the decoder software has to be reset. This is done by activating bit
-                // SM RESET in register SCI MODE (Chapter 8.7.1). Then wait for at least 2 μs,
+                // SM RESET in register SCI MODE (Chapter 8.7.1). Then wait for at least 2 us,
     	        sciModeWord = sci_read(SCI_MODE);
     	        sciModeWord |= SM_RESET;    
     	        sci_write(SCI_MODE, sciModeWord);
@@ -566,26 +579,67 @@ inline __attribute__((always_inline)) void SFAudioShield::terminateStream(void) 
         sci_write(SCI_DECODE_TIME, 0x0000);
 	    delayMicroseconds(9); // wait 100 CLKI cycles, as per documentation
         bytesSent=0;
-        track.close(); terminate=false; isPlaying=false; terminateState=SEND2052ENDFILLBYTE;
+        track.close(); terminate=false; isPlaying=false; terminateState=PLAYING; is_concat=false;
     }
+}
+
+// software reset
+// This is done by activating bit SM RESET in register SCI MODE (Chapter 8.7.1).
+// Then wait for at least 2 μs, then look at DREQ. DREQ will stay down for about 22000 clock cycles,
+// which means an approximate 1.8 ms delay if VS1053b is run at 12.288 MHz. After DREQ is up,
+// you may continue playback as usual.
+void SFAudioShield::sResetVS1053(void) {
+    if (_via_interrupt) { INTERRUPT_HANDLER_DISABLE; }
+    if (terminate) {
+        terminate=false; isPlaying=false; terminateState=PLAYING;
+    }
+    uint16_t sciModeWord = sci_read(SCI_MODE);
+    sciModeWord |= SM_RESET;    
+    sci_write(SCI_MODE, sciModeWord);
+	delayMicroseconds(2);
+    while (! _DREQ);
+    bytesSent=0;
+}
+
+void writeAudioDataBuffer(uint8_t count) {
+	uint8_t i;
+
+#ifdef DEEPDEBUG
+	Serial.print(F("WADB: ")); Serial.println(count, DEC);
+#endif
+	//for (i=0; i < count; i++) { Serial.write(audioDataBuffer[i]); }
+	for (i=0; i < count; i++) { Serial.print(audioDataBuffer[i], DEC); Serial.print(" ");}
+	Serial.println("");
 }
 
 inline void SFAudioShield::fillBuffer(void) {
 	int8_t i;
-	//Serial.print("&"); Serial.flush();
 	sci_dis(); sdi_dis();
+    // Ugh. Do I really have to do this? -Mike
+    uint8_t oldSREG = SREG;
+    cli();
 	SDFileReadResults=(track.read(audioDataBuffer, VS_BUFFER_SIZE)); //Go out to SD card and try reading VS_BUFFER_SIZE new bytes of the song
-	//Serial.print("&"); Serial.flush();
-	//Serial.print("&"); Serial.flush();
+    SREG = oldSREG;
 
 	i=SDFileReadResults;
+    //if (is_concat) { Serial.print("$"); Serial.print(i, DEC); }
 	if (SDFileReadResults < 0) { fileError=true; i=0; }
-	//Serial.print("&"); Serial.flush();
 	if (i < VS_BUFFER_SIZE) {
 		readEndFillByte();
 		for (; i < VS_BUFFER_SIZE; i++) audioDataBuffer[i]=vs1053EndFillByte;
+        // MIKE
+        /*if (is_concat) {
+            //Serial.print("FB:");
+            //writeAudioDataBuffer(VS_BUFFER_SIZE);
+	        SDFileReadResults=(track.read(audioDataBuffer, VS_BUFFER_SIZE)); //Go out to SD card and try reading VS_BUFFER_SIZE new bytes of the song
+            writeAudioDataBuffer(32);
+            track.seekSet(0);
+        }*/
+        //
 	}
-	//Serial.print("&"); Serial.flush();
+#ifdef DEEPDEBUG
+	DEBUGOUT("&");
+#endif
 }
 
 // IF DREQ is high, vs1053 can take at least 32 bytes of data.
@@ -600,25 +654,29 @@ inline __attribute__((always_inline)) void SFAudioShield::transferBuffer(void) {
   */
 inline __attribute__((always_inline)) void SFAudioShield::fileXferBlock(void)
 {
-	//Serial.print("+"); Serial.flush();
 	//Go out to SD card and try reading VS_BUFFER_SIZE new bytes of the song.
 	//Buffer is guaranteed to be filled with song and/or vs1053EndFillByte
+    //if (is_concat) Serial.print("CT3*");
 	fillBuffer();
     // write buffer to vs1053b
 	transferBuffer();
-	//Serial.print("+"); Serial.flush();
+#ifdef DEEPDEBUG
+	DEBUGOUT("+");
+#endif
 }
  
 void SFAudioShield::loadVS1053FIFO(bool is_continuous)
 {
-	continuous=is_continuous;
+	_continuousS=is_continuous;
 	loadVS1053FIFO();
 }
 
 // IF DREQ is high, vs1053 can take at least VS_BUFFER_SIZE bytes of data.
 void SFAudioShield::loadVS1053FIFO()
 {
+    //if (is_concat) Serial.print("CT2*");
 	while (_DREQ && isPlaying) {
+        //if (is_concat) Serial.print("CT2.5*");
         if (terminate) terminateStream();
         else {
 	        //if (TIFR0 & _BV(TOV1)) { 	// Read Timer 0 overflow bit
@@ -630,7 +688,8 @@ void SFAudioShield::loadVS1053FIFO()
 	        fileXferBlock();
 	        if(SDFileReadResults < VS_BUFFER_SIZE) terminate=true;
         }
-		if (! continuous) break;
+		if (! _continuousS) { //if (is_concat) { Serial.print("NC*"); Serial.flush(); };
+            break; }
 	}
 }
 
@@ -640,14 +699,29 @@ int8_t SFAudioShield::start(char *fileName)
 	if (_via_interrupt) { INTERRUPT_HANDLER_DISABLE; }
 	sci_dis(); sdi_dis();
 	if (!track.open(&root, fileName, O_READ)) { fileError=true; return -1; }
-
 	return 1;
+}
+
+// Just stuff another file onto an existing stream.
+int8_t SFAudioShield::concatenate(char *filename)
+{
+	sResetVS1053();
+    track.close();
+    isPlaying=false;
+    if (start(filename) != 1) {  cancel(); fileError=true; return -1; }
+    is_concat=true;
+    //Serial.print("concatenate "), Serial.println(filename);
+    is_concat=true;
+    //if (is_concat) Serial.print("CT1*");
+    return play();
 }
 
 // MIKE: _via_interrupt work here!
 int8_t SFAudioShield::play()
 {
-	digitalWriteFast(MYLED, LOW);
+#ifdef DEBUG
+	//digitalWriteFast(MYLED, LOW);
+#endif
 	if (isPlaying) return 0;
 	timer0OFCounter=0;
 	sci_write(SCI_MODE, 0x0802); // SM_SDINEW and SM_LAYER12 are set. SM_SDINEW is the default, as per the datasheet.
@@ -665,14 +739,15 @@ int8_t SFAudioShield::play()
 	DEBUGOUT("play() called.");
 	//DEBUGOUT("TCNT1 readings. Each tick is 64 micros. TCNT1 is reset now.");
 	//TCNT1=0x0000;
-	DEBUGOUT("TCNT1:"); DEBUGOUT2(TCNT1, DEC); DEBUGNL;
+	//DEBUGOUT("TCNT1:"); DEBUGOUT2(TCNT1, DEC); DEBUGNL;
 	changeVolume();
 	sci_write(SCI_DECODE_TIME, 0x0000); delayMicroseconds(9); // wait 100 CLKI cycles, as per documentation
-	loadVS1053FIFO(true); // prime it, damn it!
+    // For timing.
 	//Serial.print(getPSTR("TCNT1:")); Serial.println(TCNT1, DEC);
 	//Serial.println(millis(), DEC);
 	DEBUGOUT(" pCOUNT: "); DEBUGOUT2(callCount, DEC);
-	if (_via_interrupt) { INTERRUPT_HANDLER_ENABLE; };
+	loadVS1053FIFO(); // prime it, damn it!
+	if (_via_interrupt) INTERRUPT_HANDLER_ENABLE;
 	DEBUGOUT(" PLAY:GO!!! ");
 	DEBUGOUT2(SDFileReadResults, DEC);
 	//Serial.print(getPSTR("TCNT1:")); Serial.println(TCNT1, DEC);
@@ -702,7 +777,12 @@ void SFAudioShield::cancel(void)
 	if (! SFAudioShield::isPlaying) { return ;} // nothing to do.
     if (_via_interrupt) { ENDING_START } // detaches out interrupt, sets interrupts on
     //DEBUGOUT("SFAudioShieldb: Song stopping..\r\n");
- 
+
+    if (terminateState!=PLAYING) { // if you cancel while the stream is being terminated...
+        while (terminateState!=PLAYING) terminateStream();
+        return;
+    }
+
 	while (!_DREQ);
 	ENDING_SET_SM_CANCEL
      
@@ -737,7 +817,7 @@ void SFAudioShield::cancel(void)
     {
         DEBUGOUT("SFAudioShield: SM CANCEL hasn't cleared after sending 2048 bytes, do software reset\r\n");
         //DEBUGOUT("SFAudioShieldb: SCI MODE = %#x, SM_CANCEL = %#x\r\n", sciModeWord, sciModeWord & SM_CANCEL);
-        initVS1053();
+        sResetVS1053();
     }
 	delayMicroseconds(7); // wait 80 CLKI cycles, or 80/12288000 seconds
 
@@ -760,16 +840,17 @@ void SFAudioShield::cancel(void)
 		checkpoint=start;
 		while (1) {
 			if ((millis() - start) > 10000) {
-				Serial.print(F("10 seconds: Tired of waiting for HDAT1!!!!!!!")); break;
+				DEBUGOUT("10 seconds: Tired of waiting for HDAT1!!!!!!!");
+                break;
 			}
 			if ((millis() - checkpoint) > 1000) {
-				Serial.print(F("Checkpoint: 1 Secord: HDAT1 still not 0!!!"));
+				DEBUGOUT("Checkpoint: 1 Secord: HDAT1 still not 0!!!");
 				checkpoint=millis();
 			}
     		hdat1 = sci_read(SCI_HDAT1); // see p. 50 of the VS1053 v. 1.01 datasheet
 			if (hdat1 == 0) {
 				checkpoint=millis()-start;
-				Serial.print(F("HDAT1 Became 0 after ")); Serial.println(checkpoint, DEC);
+				DEBUGOUT("HDAT1 Became 0 after "); DEBUGOUT2(checkpoint, DEC); DEBUGNL;
 				becameZero=true;
 				break;
 			}
@@ -859,17 +940,11 @@ typedef struct {
 } ogg_page;
 
 uint8_t *SFAudioShield::getAudioDataBuffer() {
-	//Serial.print(F("gADBuff:"));
-	//Serial.println((char *) audioDataBuffer);
+#ifdef DEBUG
+	DEBUGOUT("gADBuff:");
+	Serial.println((char *) audioDataBuffer);
+#endif
 	return(audioDataBuffer);
-}
-
-void writeAudioDataBuffer(uint8_t count) {
-	uint8_t i;
-
-	//Serial.print(F("WADB: ")); Serial.println(count, DEC);
-	for (i=0; i < count; i++) { Serial.write(audioDataBuffer[i]); }
-	Serial.println("");
 }
 
 void printAudioDataBuffer(uint8_t count) {
@@ -899,8 +974,9 @@ int8_t SFAudioShield::getFileComments(char *fieldName) {
 		// OGG HEADER: OK +++++++++++++++++++++++++++++++++++++++++
 		// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 		SDFileReadResults=(track.read(dataBuffer, 27)); // read the rest of Ogg header to the Segment table
-
-		//printAudioDataBuffer(27); // !!!!!!!!!!!!!!!!!!!!!!
+#ifdef DEEPDEBUG
+		printAudioDataBuffer(27); // !!!!!!!!!!!!!!!!!!!!!!
+#endif
 
 		number32_1=dataBuffer[26]; // Contains the length of the only segment, the vorbis id header
 		// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -909,9 +985,12 @@ int8_t SFAudioShield::getFileComments(char *fieldName) {
 		SDFileReadResults=(track.read(dataBuffer, number32_1)); // read the 30 bytes of the vorbis ID header;
 		//track.seekCur(number32_1); // read past the vorbis ID header
 
-		//DEBUGOUT("Vorbis Header Size: "); DEBUGOUT2(number32_1, DEC);
+
 		// OK +++++++++++++++++++++++++++++++++++++++++++++++++++++
-		//Serial.print(F("Contents: ")); printAudioDataBuffer(number32_1); // !!!!!!!!!!!!!!!!!!!!!!
+#ifdef DEEPDEBUG
+		DEBUGOUT("Vorbis Header Size: "); DEBUGOUT2(number32_1, DEC);
+		DEBUGOUT("Contents: "); printAudioDataBuffer(number32_1); // !!!!!!!!!!!!!!!!!!!!!!
+#endif
 		// Sanity check for Vorbis file.
 		if ((dataBuffer[0] != 1) || (dataBuffer[1] != 'v')) { track.seekSet(0); return 0; }
 		DEBUGOUT("Ogg header next:\r\n");
@@ -923,25 +1002,22 @@ int8_t SFAudioShield::getFileComments(char *fieldName) {
 		SDFileReadResults=(track.read(dataBuffer, 27)); // read the Ogg header; assume we're only
                                                         // interested in the first segment- the vorbis
                                                         // comments section.
-		Serial.print(F(""));
+		DEBUGOUT("");
 		number32_2=dataBuffer[26]; // This is size of the page segment table; we don't really care about it.
 								   // Should be: 11 (== 17 d)
-		Serial.print(F("PG Sgmnt Size: ")); Serial.println(number32_2, DEC);
+		DEBUGOUT("PG Sgmnt Size: "); DEBUGOUT2(number32_2, DEC); DEBUGNL;
 		SDFileReadResults=(track.read(dataBuffer, number32_2)); // read the segment table
-		//printAudioDataBuffer(number32_2); // !!!!!!!!!!!!!!!!!!!!!!
+#ifdef DEEPDEBUG
+		printAudioDataBuffer(number32_2); // !!!!!!!!!!!!!!!!!!!!!!
+#endif
 		i=0; number32_1=0; for (;;) {
 			number32_1+=dataBuffer[i]; if (dataBuffer[i] != 255) break; // the length of the vorbis
                                                                         // comments header
 			i++;
 		}
-		//DEBUGOUT("Vorbis Comments Size: "); DEBUGOUT2(number32_1, DEC);
-		//i=0;
-		/*while (1) {
-			number32_1+=dataBuffer[i];					// ...increase the size of the vorbis comment section
-			if (dataBuffer[i] != 255) break;
-			i++;
-		}*/
-
+#ifdef DEEPDEBUG
+		DEBUGOUT("Vorbis Comments Size: "); DEBUGOUT2(number32_1, DEC);
+#endif
 		// 
 		// number32_1 is the length of the entire comments header. Must maintain it throughout this section.
 		//
@@ -950,12 +1026,18 @@ int8_t SFAudioShield::getFileComments(char *fieldName) {
 		// VORBIS COMMENTS HEADER +++++++++++++++++++++++++++++++++
 		// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 		SDFileReadResults=(track.read(dataBuffer, 7)); number32_1-=7; //read: 3, 'v', 'o', 'r', 'b', 'i', 's'
-		//printAudioDataBuffer(7); // !!!!!!!!!!!!!!!!!!!!!!
+#ifdef DEEPDEBUG
+		printAudioDataBuffer(7); // !!!!!!!!!!!!!!!!!!!!!!
+#endif
 		SDFileReadResults=(track.read(dataBuffer, 4)); number32_1-=4; // read the length of the vendor string
-		//Serial.print(getPSTR("Vendor length: ")); printAudioDataBuffer(4); // !!!!!!!!!!!!!!!!!!!!!!
+#ifdef DEEPDEBUG
+		DEBUGOUT("Vendor length: "); printAudioDataBuffer(4); // !!!!!!!!!!!!!!!!!!!!!!
+#endif
 		number32_2 =									             // then calculate it (it's in LSB first)
 			dataBuffer[0] | dataBuffer[1] << 8 | dataBuffer[2] << 16 | dataBuffer[3] << 24;
-		//DEBUGOUT("Vendor length: "); DEBUGOUT2(number32_2, DEC);
+#ifdef DEEPDEBUG
+		DEBUGOUT("Vendor length: "); DEBUGOUT2(number32_2, DEC);
+#endif
 		do {
 			// read past the vendor string, at most MUSIC_FILE_BUFFER bytes at a time...
 			SDFileReadResults=
@@ -976,13 +1058,17 @@ int8_t SFAudioShield::getFileComments(char *fieldName) {
 
 		number32_2 =								   // it's in LSB first
 			dataBuffer[0] | dataBuffer[1] << 8 | dataBuffer[2] << 16 | dataBuffer[3] << 24;
-		//DEBUGOUT("Number of comments: "); DEBUGOUT2(number32_2, DEC);
+#ifdef DEEPDEBUG
+		DEBUGOUT("Number of comments: "); DEBUGOUT2(number32_2, DEC);
+#endif
 		while (number32_2 > 0) { // NOTE: there may be no comments, in which case number32_2 == 0!
 			SDFileReadResults=(track.read(dataBuffer, 4)); number32_1-=4; // read the length of the comment
 			number32_3 =									   // then calculate it (it's in LSB first)
 				dataBuffer[0] | dataBuffer[1] << 8 | dataBuffer[2] << 16 | dataBuffer[3] << 24;
-			//Serial.print(F("Cur Position: ")); Serial.println(track.curPosition(), DEC);
-			//Serial.print(F("Length of comment: ")); Serial.println(number32_3, DEC);
+#ifdef DEEPDEBUG
+			DEBUGOUT("Cur Position: "); DEBUGOUT2(track.curPosition(), DEC); DEBUGNL;
+			DEBUGOUT("Length of comment: "); DEBUGOUT2(number32_3, DEC); DEBUGNL;
+#endif
 
 			//
 			// number32_3 is the length of the comment.
@@ -994,11 +1080,11 @@ int8_t SFAudioShield::getFileComments(char *fieldName) {
 			// number32_3 is the length of the comment.
 			i=0;
 			found=true; // optimism...
-//#error  MIKE: Analyze carefully the compare dataBuffer contents to the fieldName...
 			for (;;) {										 	// get comment field name
 				SDFileReadResults=(track.read(&dataBuffer[i], 1)); number32_1-=1; number32_3-=1; // read the next entry
-				//Serial.write(dataBuffer[i]); Serial.print("-"); Serial.println(i, DEC);
-				//Serial.write('>'); Serial.write(dataBuffer[i]); // !!!!!!!!!!!!!!!!!!!!!!
+#ifdef DEEPDEBUG
+				Serial.write(dataBuffer[i]); DEBUGOUT("-"); DEBUGOUT2(i, DEC); DEBUGNL;
+#endif
 				if (fieldName[i]==0) break; // found it up to the length of fieldName[].
 				if (dataBuffer[i] == '=') break; // end of the comment name
 				if (tolower(dataBuffer[i])!=tolower(fieldName[i])) // field name is case-insensitive
@@ -1009,15 +1095,19 @@ int8_t SFAudioShield::getFileComments(char *fieldName) {
 				i++; SDFileReadResults=(track.read(&dataBuffer[i], 1));
 				number32_1--; number32_3--;
 			}
-			//Serial.print(F("Found field: "));
-			//writeAudioDataBuffer(i); // !!!!!!!!!!!!!!!!!!!!!!
+#ifdef DEBUG
+			DEBUGOUT("Found field: ");
+			writeAudioDataBuffer(i); // !!!!!!!!!!!!!!!!!!!!!!
+#endif
 
 			// Now get the field data...
 			if (number32_3 < (MUSIC_FILE_BUFFER-1)) { musicFileFrameToRead=number32_3; }
 			else musicFileFrameToRead=MUSIC_FILE_BUFFER-1;
 			SDFileReadResults=
                 (track.read(dataBuffer, musicFileFrameToRead)); // read the field, up to MUSIC_FILE_BUFFER-1
-			//writeAudioDataBuffer(musicFileFrameToRead); // !!!!!!!!!!!!!!!!!!!!!!
+#ifdef DEBUG
+			writeAudioDataBuffer(musicFileFrameToRead); // !!!!!!!!!!!!!!!!!!!!!!
+#endif
 			number32_1-= musicFileFrameToRead; number32_3-=musicFileFrameToRead;
 			if (found) { dataBuffer[musicFileFrameToRead]=0; track.seekSet(0); return(musicFileFrameToRead); } // found? terminate the string with \0 and return
 			track.seekCur(number32_3); number32_1-=number32_3; // slurp in the remainder.
@@ -1053,23 +1143,33 @@ int8_t SFAudioShield::getFileComments(char *fieldName) {
 			number32_2=dataBuffer[4] << 24 | dataBuffer[5] << 16 | dataBuffer[6] << 8 | dataBuffer[7];
 			found=true; musicFileFrameToRead=0;
 			for (i=0; i<4; i++) {										 	// get comment field name
-				//Serial.write(dataBuffer[i]); Serial.print("-"); Serial.println(i, DEC);
-				//Serial.write('>'); Serial.write(dataBuffer[i]); // !!!!!!!!!!!!!!!!!!!!!!
+#ifdef DEEPDEBUG
+				Serial.write(dataBuffer[i]); DEBUGOUT("-"); DEBUGOUT2(i, DEC); DEBUGNL
+#endif
 				if (dataBuffer[i]!=fieldName[i]) { found=false; break; } // field name is upper case
 			}
 			if (found) { 
-				//Serial.print(F("Found field: "));
-				//writeAudioDataBuffer(i); // !!!!!!!!!!!!!!!!!!!!!!
+#ifdef DEEPDEBUG
+				DEBUGOUT("Found field: ");
+				writeAudioDataBuffer(i); // !!!!!!!!!!!!!!!!!!!!!!
+#endif
 				if (number32_2 >= MUSIC_FILE_BUFFER) musicFileFrameToRead = MUSIC_FILE_BUFFER-1; else musicFileFrameToRead=(uint8_t)number32_2;
-				//Serial.print(F("Bytes to Read: ")); Serial.println(musicFileFrameToRead, DEC);
+#ifdef DEEPDEBUG
+				DEBUGOUT("Bytes to Read: "); DEBUGOUT2(musicFileFrameToRead, DEC); DEBUGNL;
+#endif
 				do {
 					SDFileReadResults=(track.read(dataBuffer, 1)); // read past leading 0's.
 					musicFileFrameToRead--;
 				} while ((dataBuffer[0] == 0) && (musicFileFrameToRead != 0));
-				//Serial.print(F("Bytes to Read: ")); Serial.println(musicFileFrameToRead, DEC);
+#ifdef DEEPDEBUG
+				Serial.print(F("Bytes to Read: ")); Serial.println(musicFileFrameToRead, DEC);
+#endif
 				SDFileReadResults=(track.read(&dataBuffer[1], (uint16_t)musicFileFrameToRead)); // read the ID3 frame
 				dataBuffer[musicFileFrameToRead+1]=0;
-				Serial.print(F("Read: ")); Serial.println((char *) dataBuffer);
+#ifdef DEBUG
+				DEBUGOUT("Read: ");
+                Serial.println((char *) dataBuffer);
+#endif
 				number32_1-=musicFileFrameToRead; number32_2-=musicFileFrameToRead;
 				track.seekSet(0); return(musicFileFrameToRead); // found? terminate the string with \0 and return
 			}
@@ -1088,7 +1188,9 @@ void SFAudioShield::getAudioInfo(AudioInfo* aInfo)
     uint16_t hdat0 = sci_read(SCI_HDAT0);
     uint16_t hdat1 = sci_read(SCI_HDAT1);
      
-    //DEBUGOUT("SFAudioShieldb: Audio info\r\n");        
+#ifdef DEEPDEBUG
+    DEBUGOUT("SFAudioShieldb: Audio info\r\n");        
+#endif
      
     AudioInfo* retVal = aInfo;
     retVal->type = UNKNOWN;        
@@ -1123,7 +1225,7 @@ void SFAudioShield::getAudioInfo(AudioInfo* aInfo)
         // audio  is mp3
         retVal->type = MP3;
          
-        //DEBUGOUT("SFAudioShieldb:   Audio is mp3\r\n");        
+        DEBUGOUT("SFAudioShieldb:   Audio is mp3\r\n");        
         retVal->ext.mp3.id =      (MP3_ID)((hdat1 >>  3) & 0x0003);
         switch((hdat1 >>  1) & 0x0003)
         {
@@ -1152,16 +1254,32 @@ void SFAudioShield::getAudioInfo(AudioInfo* aInfo)
         retVal->ext.mp3.original =       (hdat0 >>  2) & 0x0001;
         retVal->ext.mp3.emphasis =       (hdat0 >>  0) & 0x0003;
          
-        //DEBUGOUT("SFAudioShieldb:  ID: %i, Layer: %i, Samplerate: %i, Mode: %i\r\n", retVal->ext.mp3.id, retVal->ext.mp3.layer, retVal->ext.mp3.kSampleRate, retVal->ext.mp3.mode);        
+#ifdef DEBUG
+        DEBUGOUT("SFAudioShieldb:  ID: ");
+        DEBUGOUT2(retVal->ext.mp3.id, DEC);
+        DEBUGOUT(" Layer: ");
+        DEBUGOUT2(retVal->ext.mp3.layer, DEC);
+        DEBUGOUT(" Samplerate: ");
+        DEBUGOUT2(retVal->ext.mp3.kSampleRate, DEC);
+        DEBUGOUT(" Mode: ");
+        DEBUGOUT2(retVal->ext.mp3.mode, DEC);
+        DEBUGNL;
+#endif
     }
      
     // read byteRate
     uint16_t byteRate = wram_read(para_byteRate);
     retVal->kBitRate = (byteRate * 8) / 1000;
-    //DEBUGOUT("SFAudioShieldb:  BitRate: %i kBit/s\r\n", retVal->kBitRate);
-     
+#ifdef DEBUG
+    DEBUGOUT("SFAudioShieldb:  BitRate: ");
+    DEBUGOUT2(retVal->kBitRate, DEC);
+    DEBUGOUT("kBit/s\r\n");
+#endif
     // decode time
     retVal->decodeTime = sci_read(SCI_DECODE_TIME);    
-    //DEBUGOUT("SFAudioShieldb:  Decodetime: %i s\r\n", retVal->decodeTime);
-                   
+#ifdef DEBUG
+    DEBUGOUT("SFAudioShieldb:  DecodeTime: ");
+    DEBUGOUT2(retVal->decodeTime, DEC);
+    DEBUGOUT(" s\r\n");
+#endif
 }

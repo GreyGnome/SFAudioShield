@@ -48,7 +48,11 @@
  */
 
 /*
- * VS1053 clock: 12.288 MHz on the shield
+ * VS1053 clock: 12.288 MHz on the shield frequency
+ * 1 cycle: 81.3 nanos == .0813 micros
+ * VS1053 SPI bus: 2 CLKI cycles high, 2 CLKI cycles low minimum == .3252 micros total
+ * (4 * .08138)
+ * == 3.072 MHz max.
  */
 
 #ifndef SFAUDIO_H
@@ -59,9 +63,17 @@
 // ----------------------------------------------------------------------------
 // Extended settings
 // ----------------------------------------------------------------------------
-//   Enable debug output (Output -> printf ...)
+
+// ----------------------------------------------------------------------------
+//   Enable debug output
 //   --------------------------------------------------------------------------
-#define DEBUG
+#undef DEEPDEBUG
+#undef DEBUG
+//   --------------------------------------------------------------------------
+
+#ifdef DEEPDEBUG
+#undef DEBUG
+#endif
 #ifdef DEBUG
 #define DEBUGOUT(x)  Serial.print(F(x)); Serial.flush()
 #define DEBUGOUT2(x,y)  Serial.print(x,y);
@@ -115,6 +127,7 @@ static SdFile track;
 // VS1053 Stuff *******************************************************
 #define POINT5 1
 #define DEFAULT_VOLUME                             0x14 // == 20 == -10 dB
+//#define DEFAULT_VOLUME                             0x0A // == 10 == -5 dB
 #define DEFAULT_BASS_AMPLITUDE                        0 //   0 -    15 dB
 #define DEFAULT_BASS_FREQUENCY                      100 //  20 -   150 Hz
 #define DEFAULT_TREBLE_AMPLITUDE                      0 //  -8 -     7 dB
@@ -348,6 +361,7 @@ public:
  * Constructor
  * =================================================================*/
 	SFAudioShield(bool via_interrupt) : _via_interrupt(via_interrupt),
+        _continuous(true),
 		_volume(DEFAULT_VOLUME),
 		_balance(0),
         _sb_amplitude(DEFAULT_BASS_AMPLITUDE),
@@ -357,6 +371,17 @@ public:
 	INTERRUPT_HANDLER_DISABLE
     };
 	SFAudioShield() : _via_interrupt(DEFAULT_INTERRUPT_STATE),
+        _continuous(true),
+		_volume(DEFAULT_VOLUME),
+		_balance(0),
+        _sb_amplitude(DEFAULT_BASS_AMPLITUDE),
+        _sb_freqlimit(DEFAULT_BASS_FREQUENCY),
+        _st_amplitude(DEFAULT_TREBLE_AMPLITUDE),
+        _st_freqlimit(DEFAULT_TREBLE_FREQUENCY) {
+	INTERRUPT_HANDLER_DISABLE
+    };
+	SFAudioShield(bool via_interrupt, bool load_continuously) : _via_interrupt(via_interrupt),
+        _continuous(load_continuously),
 		_volume(DEFAULT_VOLUME),
 		_balance(0),
         _sb_amplitude(DEFAULT_BASS_AMPLITUDE),
@@ -385,6 +410,12 @@ public:
 	 *	  1 on successful init
      */
     uint8_t  initVS1053(void);
+
+    /** Software reset vs1053b
+     * Performs a software reset of the device as per the datasheet.
+     * @return none
+     */
+    void sResetVS1053(void);
     
     /** Set the volume.
      * 
@@ -515,8 +546,10 @@ public:
      */    
     void setPlaySpeed(uint16_t speed);       
         
-    /** Start playing audio from file. Will not play a new file if an existing track
-     * is alreading playing.
+    /** Start audio file. Will not start a new file if an existing track
+     * is alreading playing. We need to separate start() from play() because,
+     * rather than playing, we may want to grab the track's header before
+     * playing.
      * @return
      *  0 if another track is playing
      *  -1 on track open error
@@ -537,6 +570,15 @@ public:
      */    
     int8_t play();
 
+    /** Just stuff another file onto an existing stream. Closes the already open file.
+     * Calls cancel() if the file open fails.
+     * I doubt if this is supported by the chip, but what the heck.
+	 * @return
+     *  1 if successful start, -1 if file open failed.
+     */
+    int8_t concatenate(char *filename);
+
+
 	/** send at least 32 bytes of data from the open file on the SD card to the vs1052. This
 	 * method will check to see that the chip is ready to receive. A single block of 32 bytes
 	 * is sent, or, if continuous is true, the chip will receive data in 32 byte chunks while
@@ -554,8 +596,11 @@ public:
      * @param continuous
      *  load the FIFO until full (otherwise send a single block of 32 bytes)
      *  Subsequent calls of loadVS1053FIFO() will use the same value of continuous.
+     *  This should always be true when loading via interrupt, or the VS1053 will not
+     *  alert us that it needs new data (we are interrupted on RISING).
+     *  Default is true, set in the constructor, above.
 	 */
-	static void loadVS1053FIFO(bool continuous);
+	static void loadVS1053FIFO(bool is_continuous);
 	static void loadVS1053FIFO(void);
 
 
@@ -705,12 +750,6 @@ public:
     // For timing. Not used in production.
 	static volatile uint16_t timer0OFCounter;
 
-    // If the loadVS1053FIFO() was called to load the VS1053 continuously until its
-    // FIFO is filled, or only a single 32-byte block should be sent.
-    // This should always be true when loading via interrupt, or the VS1053 will not
-    // alert us that it needs new data (we are interrupted on RISING).
-	static bool continuous;
-
 	// static char id3Frame[4]; // See "What is this for?" in the .cpp file
 
 protected:
@@ -793,6 +832,14 @@ protected:
 	// VS1053's FIFO is filled via interrupt, or must be called by the caller often enough
 	// to ensure it doesn't drain out.
 	bool							_via_interrupt;
+
+    // If the loadVS1053FIFO() was called to load the VS1053 continuously until its
+    // FIFO is filled, or only a single 32-byte block should be sent.
+    // This should always be true when loading via interrupt, or the VS1053 will not
+    // alert us that it needs new data (we are interrupted on RISING).
+    // Default is true from the constructor, above.
+	bool _continuous;
+
  
     static const char PROGMEM          _sampleRateTable[4][4];       // _sampleRateTable[id][srate]
 

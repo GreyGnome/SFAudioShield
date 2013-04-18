@@ -7,8 +7,8 @@ This library plays Ogg, MP3, and AAC (iTunes m4a) files.
 
 Get the player at https://www.sparkfun.com/products/10628
 
-Requires #define SD_FAT_VERSION 20111205 of the Arduino SdFat library. The Arduino's builtin
-SdFat library will likely not work. :-(
+Requires #define SD_FAT_VERSION 20111205 of the Arduino SdFat library (or newer). The Arduino's
+builtin SdFat library may not work. :-(
 
 Also requires the digitalWriteFast library.
 
